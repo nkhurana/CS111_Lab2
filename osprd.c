@@ -210,7 +210,7 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
         {
             if (d->read_list != NULL)
 			{
-				/**remove current pid from read_pid list	
+				//remove current pid from read_pid list	
 				if (d->read_list->reader == current->pid) // read lock in head
 				{
 					read_list_t del = d->read_list;
@@ -226,7 +226,7 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 					read_list_t del = itr->next;
 					itr->next = itr->next->next;
 					kfree(del);
-				}*/
+				}
 				d->num_ReadLocks--;
 			}
         }
@@ -320,9 +320,19 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         //check if file is open for writing and process desires write lock
         if (filp_writable)
         {
+		    osp_spin_lock(&d->mutex);
             //muust iterate thorugh all read_lock pids and ensure you haven't read locked the ramdisk already or deadlock! (NEEDS TO BE DONE)
-            
-            osp_spin_lock(&d->mutex);
+            read_list_t itr = d->read_list;
+			while(itr != NULL)
+			{
+				if (itr->reader == current->pid)
+				{
+					osp_spin_unlock(&d->mutex);
+					return -EDEADLK;
+				}
+				itr = itr->next;
+			}
+
             //can only get writing lock if no other processes have writing or reading lock and you are holding the correct ticket
             if (d->num_ReadLocks!=0 || d->ramdisk_WriteLocked || d->ticket_tail!=localTicket)
             {
@@ -404,9 +414,19 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         //check if file is open for writing and process desires write lock
         if (filp_writable)
         {
+		    osp_spin_lock(&d->mutex);
             //muust iterate thorugh all read_lock pids and ensure you haven't locked the ramdisk already or deadlock!
-            
-            osp_spin_lock(&d->mutex);
+            read_list_t itr = d->read_list;
+			while(itr != NULL)
+			{
+				if (itr->reader == current->pid)
+				{
+					osp_spin_unlock(&d->mutex);
+					return -EDEADLK;
+				}
+				itr = itr->next;
+			}
+
             //can only get writing lock if no other processes have writing or reading lock
             if (d->num_ReadLocks!=0 || d->ramdisk_WriteLocked || d->ticket_head!=d->ticket_tail)
             {
@@ -490,7 +510,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         {
 			if (d->read_list != NULL)
 			{
-				/**remove current pid from read_pid list
+				//remove current pid from read_pid list
 				if (d->read_list->reader == current->pid) // read lock in head
 				{
 					read_list_t del = d->read_list;
@@ -506,7 +526,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 					read_list_t del = itr->next;
 					itr->next = itr->next->next;
 					kfree(del);
-				}*/
+				}
 				d->num_ReadLocks--;
 			}
         }
