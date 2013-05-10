@@ -34,7 +34,7 @@
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("CS 111 RAM Disk");
 // EXERCISE: Pass your names into the kernel as the module's authors.
-MODULE_AUTHOR("Skeletor");
+MODULE_AUTHOR("Neeraj Khurana & Evan Shi");
 
 #define OSPRD_MAJOR	222
 
@@ -64,7 +64,7 @@ typedef struct osprd_info {
     
     
     //Added members
-    bool ramdisk_WriteLocked;
+    int ramdisk_WriteLocked; //1 if true
     pid_t pid_holdingWriteLock;
     
     int num_ReadLocks;
@@ -133,6 +133,9 @@ static void osprd_process_request(osprd_info_t *d, struct request *req)
 
     int byteOffset = req->sector*SECTOR_SIZE;
     int numBytes = req->current_nr_sectors*SECTOR_SIZE;
+    
+    //ensure writing/reading within bounds
+    
     
     if (rq_data_dir(req)== READ)
     {
@@ -277,7 +280,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
             }
             
             //allow current process to have the write lock and update struct values
-            d->ramdisk_WriteLocked=true;
+            d->ramdisk_WriteLocked=1;
             d->pid_holdingWriteLock = current->pid;
             filp->f_flags |= F_OSPRD_LOCKED;
             osp_spin_unlock(&d->mutex);
@@ -345,7 +348,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
             }
             
             //allow current process to have the write lock and update struct values
-            d->ramdisk_WriteLocked=true;
+            d->ramdisk_WriteLocked=1;
             d->pid_holdingWriteLock = current->pid;
             filp->f_flags |= F_OSPRD_LOCKED;
             osp_spin_unlock(&d->mutex);
@@ -401,7 +404,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         
         if (filp_writable)
         {
-            d->ramdisk_WriteLocked=false;
+            d->ramdisk_WriteLocked=0;
         }
         else //ramdisk was locked on reading
         {
