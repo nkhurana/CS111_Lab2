@@ -44,6 +44,12 @@ MODULE_AUTHOR("Neeraj Khurana & Evan Shi");
 static int nsectors = 32;
 module_param(nsectors, int, 0);
 
+typedef struct read_list_node {
+	pid_t reader;
+	struct read_list_node *next;
+} read_list_node;
+
+typedef read_list_node* read_list_t;
 
 /* The internal representation of our device. */
 typedef struct osprd_info {
@@ -62,16 +68,16 @@ typedef struct osprd_info {
 	wait_queue_head_t blockq;       // Wait queue for tasks blocked on
 					// the device lock
     
-    
-    //Added members
+	/* HINT: You may want to add additional fields to help
+	         in detecting deadlock. */
+			 
+	//Added members
     int ramdisk_WriteLocked; //1 if true
     pid_t pid_holdingWriteLock;
     
     int num_ReadLocks;
     
-
-	/* HINT: You may want to add additional fields to help
-	         in detecting deadlock. */
+	read_list_t read_list;
 
 	// The following elements are used internally; you don't need
 	// to understand them.
@@ -202,17 +208,33 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
         }
         else //ramdisk was locked on reading
         {
-            d->num_ReadLocks--;
-            
-            
-            //remove current pid from read_pid list (NEEDS TO BE DONE)
+            if (d->read_list != NULL)
+			{
+				/**remove current pid from read_pid list	
+				if (d->read_list->reader == current->pid) // read lock in head
+				{
+					read_list_t del = d->read_list;
+					d->read_list = d->read_list->next;
+					kfree(del);
+				}
+				else // not in head (must be greater than 1 element)
+				{
+					read_list_t itr = d->read_list;
+					while(itr->next->reader != current->pid)
+						itr = itr->next;
+					
+					read_list_t del = itr->next;
+					itr->next = itr->next->next;
+					kfree(del);
+				}*/
+				d->num_ReadLocks--;
+			}
         }
         
         //chnage filp->flag to unlocked (NEEDS TO BE DONE)
-        
+		wake_up_all(&d->blockq);
+        filp->f_flags &= !F_OSPRD_LOCKED;
         osp_spin_unlock(&d->mutex);
-        wake_up_all(&d->blockq);
-
 	}
 
 	return 0;
@@ -336,8 +358,21 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 
             filp->f_flags |= F_OSPRD_LOCKED;
             
-            //add current pid to linked list of pids with read locks (NEEDS TO BE DONE)
-            
+            //add current pid to linked list of pids with read locks
+            if (d->read_list == NULL)
+			{
+				read_list_t new = kmalloc(sizeof(read_list_node), GFP_ATOMIC);
+				new->reader = current->pid;
+				new->next = NULL;
+				d->read_list = new;
+			}
+			else
+			{
+				read_list_t new = kmalloc(sizeof(read_list_node), GFP_ATOMIC);
+				new->reader = current->pid;
+				new->next = d->read_list;
+				d->read_list = new;
+			}
             osp_spin_unlock(&d->mutex);
         
         }
@@ -405,7 +440,20 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
             filp->f_flags |= F_OSPRD_LOCKED;
             
             //add current pid to linked list of pids with read locks (NEEDS TO BE DONE)
-            
+            if (d->read_list == NULL)
+			{
+				read_list_t new = kmalloc(sizeof(read_list_node), GFP_ATOMIC);
+				new->reader = current->pid;
+				new->next = NULL;
+				d->read_list = new;
+			}
+			else
+			{
+				read_list_t new = kmalloc(sizeof(read_list_node), GFP_ATOMIC);
+				new->reader = current->pid;
+				new->next = d->read_list;
+				d->read_list = new;
+			}
             osp_spin_unlock(&d->mutex);
             
         }
@@ -414,7 +462,6 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
     
     else if (cmd == OSPRDIOCRELEASE) 
     {
-
 		// EXERCISE: Unlock the ramdisk.
 		//
 		// If the file hasn't locked the ramdisk, return -EINVAL.
@@ -441,16 +488,33 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         }
         else //ramdisk was locked on reading
         {
-            d->num_ReadLocks--;
-            
-            
-            //remove current pid from read_pid list (NEEDS TO BE DONE)
+			if (d->read_list != NULL)
+			{
+				/**remove current pid from read_pid list
+				if (d->read_list->reader == current->pid) // read lock in head
+				{
+					read_list_t del = d->read_list;
+					d->read_list = d->read_list->next;
+					kfree(del);
+				}
+				else // not in head (must be greater than 1 element)
+				{
+					read_list_t itr = d->read_list;
+					while(itr->next->reader != current->pid)
+						itr = itr->next;
+					
+					read_list_t del = itr->next;
+					itr->next = itr->next->next;
+					kfree(del);
+				}*/
+				d->num_ReadLocks--;
+			}
         }
         
-        //chnage filp->flag to unlocked (NEEDS TO BE DONE)
-        
+        //chnage filp->flag to unlocked
+		wake_up_all(&d->blockq);
+        filp->f_flags &= !F_OSPRD_LOCKED;
         osp_spin_unlock(&d->mutex);
-        wake_up_all(&d->blockq);
                 
 	} 
     else
