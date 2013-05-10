@@ -210,7 +210,7 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
         {
             if (d->read_list != NULL)
 			{
-				//remove current pid from read_pid list	
+				/*remove current pid from read_pid list	
 				if (d->read_list->reader == current->pid) // read lock in head
 				{
 					read_list_t del = d->read_list;
@@ -220,13 +220,13 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 				else // not in head (must be greater than 1 element)
 				{
 					read_list_t itr = d->read_list;
-					while(itr->next->reader != current->pid)
+					while(itr->next != NULL && itr->next->reader != current->pid)
 						itr = itr->next;
 					
 					read_list_t del = itr->next;
 					itr->next = itr->next->next;
 					kfree(del);
-				}
+				}*/
 				d->num_ReadLocks--;
 			}
         }
@@ -510,7 +510,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         {
 			if (d->read_list != NULL)
 			{
-				//remove current pid from read_pid list
+				/*remove current pid from read_pid list
 				if (d->read_list->reader == current->pid) // read lock in head
 				{
 					read_list_t del = d->read_list;
@@ -520,13 +520,13 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 				else // not in head (must be greater than 1 element)
 				{
 					read_list_t itr = d->read_list;
-					while(itr->next->reader != current->pid)
+					while(itr->next != NULL && itr->next->reader != current->pid)
 						itr = itr->next;
 					
 					read_list_t del = itr->next;
 					itr->next = itr->next->next;
 					kfree(del);
-				}
+				}*/
 				d->num_ReadLocks--;
 			}
         }
