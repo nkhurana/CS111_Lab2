@@ -291,14 +291,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
             {
                 osp_spin_unlock(&d->mutex);
                 //block current Process until above is false
-                int w_e_i_retValue = wait_event_interruptible(blockq, (!(d->ramdisk_WriteLocked) && d->ticket_tail==localTicket));
+                int w_e_i_retValue = wait_event_interruptible(d->blockq, (!(d->ramdisk_WriteLocked) && d->ticket_tail==localTicket));
                 osp_spin_lock(&d->mutex);
             }
             
             //process can get a read lock on the ramdisk
             d->num_ReadLocks++;
             //do you change flags to locked???
-            filp->f_flags |= F_OSPRD_LOCKED
+            filp->f_flags |= F_OSPRD_LOCKED;
             
             //add current pid to linked list of pids with read locks
             
@@ -367,7 +367,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
             //process can get a read lock on the ramdisk
             d->num_ReadLocks++;
             //do you change flags to locked???
-            filp->f_flags |= F_OSPRD_LOCKED
+            filp->f_flags |= F_OSPRD_LOCKED;
             
             //add current pid to linked list of pids with read locks
             
