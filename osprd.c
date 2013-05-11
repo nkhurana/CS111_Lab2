@@ -51,6 +51,13 @@ typedef struct read_list_node {
 
 typedef read_list_node* read_list_t;
 
+typedef struct dead_tix_node {
+	unsigned ticket;
+	struct dead_tix_node *next;
+} dead_tix_node;
+
+typedef dead_tix_node* dead_tix_t;
+
 /* The internal representation of our device. */
 typedef struct osprd_info {
 	uint8_t *data;                  // The data array. Its size is
@@ -76,8 +83,9 @@ typedef struct osprd_info {
     pid_t pid_holdingWriteLock;
     
     int num_ReadLocks;
-    
+	
 	read_list_t read_list;
+	dead_tix_t dead_tix;
 
 	// The following elements are used internally; you don't need
 	// to understand them.
@@ -176,11 +184,46 @@ static int osprd_open(struct inode *inode, struct file *filp)
 static int osprd_wake_cond(osprd_info_t *d, int dir, unsigned localTicket)
 {
 	osp_spin_lock(&d->mutex);
+	while(d->dead_tix != NULL)
+	{		
+		if (d->dead_tix->ticket == d->ticket_tail)
+		{
+			dead_tix_t del = d->dead_tix;
+			d->dead_tix = d->dead_tix->next;
+			kfree(del);
+		}
+		else // not in head (must be greater than 1 element)
+		{
+			dead_tix_t itr = d->dead_tix;
+			while(itr->next != NULL && itr->next->ticket != d->ticket_tail)
+				itr = itr->next;
+			
+			if (itr->next != NULL)
+			{
+				dead_tix_t del = itr->next;
+				itr->next = del->next;
+				kfree(del);
+			}
+			else
+				break;;
+		}
+		d->ticket_tail++;
+	}
+		
+	int r;
 	if (dir == READ)
 	{
-		return (!(d->ramdisk_WriteLocked) && d->ticket_tail==localTicket);
+		r = (!(d->ramdisk_WriteLocked) && d->ticket_tail==localTicket);
+		//eprintk("TICKET TAIL: %d\n", d->ticket_tail);
+		//eprintk("LOCAL TICKET: %d\n", localTicket);
 	}
-	return (d->num_ReadLocks==0 && !(d->ramdisk_WriteLocked) && d->ticket_tail==localTicket);
+	else
+	{
+		r = (d->num_ReadLocks==0 && !(d->ramdisk_WriteLocked) && d->ticket_tail==localTicket);
+	}
+	osp_spin_unlock(&d->mutex);
+	//eprintk("PID %d COND VALUE: %d\n", current->pid, r);
+	return r;
 }
 
 // This function is called when a /dev/osprdX file is finally closed.
@@ -214,7 +257,7 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
         {
             d->ramdisk_WriteLocked=0;
             d->pid_holdingWriteLock=-1; //ensure no process holds write lock
-			eprintk("PID %d RELEASED WRITE LOCK\n", current->pid);
+			//eprintk("PID %d RELEASED WRITE LOCK\n", current->pid);
         }
         else //ramdisk was locked on reading
         {
@@ -241,7 +284,7 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 					}
 				}
 				d->num_ReadLocks--;
-				eprintk("PID %d RELEASED READ LOCK\n", current->pid);
+				//eprintk("PID %d RELEASED READ LOCK\n", current->pid);
 			}
         }
         
@@ -320,22 +363,16 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		//r = -ENOTTY;
         
 
-        
+		osp_spin_lock(&d->mutex);
         //Since process wants lock, ensure process doesn't already have write lock or else you will block current process and therefore it can never release lock
         if (current->pid == d->pid_holdingWriteLock)
+		{
+			osp_spin_unlock(&d->mutex);
             return -EDEADLK;
-        
-        //Critical Section surrounding getting and incrementing ticket_head
-        osp_spin_lock(&d->mutex);
-        unsigned localTicket = d->ticket_head;
-        d->ticket_head++;
-        osp_spin_unlock(&d->mutex);
-        
-        //check if file is open for writing and process desires write lock
+		}
         if (filp_writable)
-        {
-		    osp_spin_lock(&d->mutex);
-            //muust iterate thorugh all read_lock pids and ensure you haven't read locked the ramdisk already or deadlock! (NEEDS TO BE DONE)
+		{
+			//muust iterate thorugh all read_lock pids and ensure you haven't read locked the ramdisk already or deadlock! (NEEDS TO BE DONE)
             read_list_t itr = d->read_list;
 			while(itr != NULL)
 			{
@@ -346,6 +383,19 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 				}
 				itr = itr->next;
 			}
+		}
+		osp_spin_unlock(&d->mutex);
+		
+        //Critical Section surrounding getting and incrementing ticket_head
+        osp_spin_lock(&d->mutex);
+        unsigned localTicket = d->ticket_head;
+        d->ticket_head++;
+        osp_spin_unlock(&d->mutex);
+        
+        //check if file is open for writing and process desires write lock
+        if (filp_writable)
+        {
+		    osp_spin_lock(&d->mutex);
 
             //can only get writing lock if no other processes have writing or reading lock and you are holding the correct ticket
             if (d->num_ReadLocks!=0 || d->ramdisk_WriteLocked || d->ticket_tail!=localTicket)
@@ -353,14 +403,24 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
                 //block current process until above is false and current process holds the next ticket!
                 osp_spin_unlock(&d->mutex);
                 int w_e_i_retValue = wait_event_interruptible(d->blockq, osprd_wake_cond(d, WRITE, localTicket));
-                //if (w_e_i_retValue == -ERESTARTSYS) return -ERESTARTSYS;
+                if (w_e_i_retValue == -ERESTARTSYS) 
+				{
+					//eprintk("PROCESS %d RECEIVED SIGNAL\n", current->pid);
+					osp_spin_lock(&d->mutex);
+					dead_tix_t new = kmalloc(sizeof(dead_tix_node), GFP_ATOMIC);
+					new->ticket = localTicket;
+					new->next = d->dead_tix;
+					d->dead_tix = new;
+					osp_spin_unlock(&d->mutex);
+					return -ERESTARTSYS;
+				}
                 osp_spin_lock(&d->mutex);
             }
             
             //allow current process to have the write lock and update struct values
             d->ramdisk_WriteLocked=1;
             d->pid_holdingWriteLock = current->pid;
-			eprintk("PID %d WRITE LOCK\n", current->pid);
+			//eprintk("PID %d WRITE LOCK\n", current->pid);
             filp->f_flags |= F_OSPRD_LOCKED;
             osp_spin_unlock(&d->mutex);
         
@@ -376,8 +436,13 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
                 int w_e_i_retValue = wait_event_interruptible(d->blockq, osprd_wake_cond(d, READ, localTicket));
                 if (w_e_i_retValue == -ERESTARTSYS) 
 				{
-					eprintk("PROCESS %d RECEIVED SIGNAL\n", current->pid);
-					//osprd_ioctl(inode, filp, OSPRDIOCRELEASE, arg);
+					//eprintk("PROCESS %d RECEIVED SIGNAL\n", current->pid);
+					osp_spin_lock(&d->mutex);
+					dead_tix_t new = kmalloc(sizeof(dead_tix_node), GFP_ATOMIC);
+					new->ticket = localTicket;
+					new->next = d->dead_tix;
+					d->dead_tix = new;
+					osp_spin_unlock(&d->mutex);
 					return -ERESTARTSYS;
 				}
                 osp_spin_lock(&d->mutex);
@@ -386,7 +451,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
             //process can get a read lock on the ramdisk
             d->num_ReadLocks++;
             filp->f_flags |= F_OSPRD_LOCKED;
-			eprintk("PID %d READ LOCK\n", current->pid);
+			//eprintk("PID %d READ LOCK\n", current->pid);
             
             //add current pid to linked list of pids with read locks
             if (d->read_list == NULL)
@@ -526,7 +591,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         {
             d->ramdisk_WriteLocked=0;
             d->pid_holdingWriteLock=-1; //ensure no process holds write lock
-			eprintk("PID %d RELEASED WRITE LOCK\n", current->pid);
+			//eprintk("PID %d RELEASED WRITE LOCK\n", current->pid);
         }
         else //ramdisk was locked on reading
         {
@@ -553,7 +618,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 					}
 				}
 				d->num_ReadLocks--;
-				eprintk("PID %d RELEASED READ LOCK\n", current->pid);
+				//eprintk("PID %d RELEASED READ LOCK\n", current->pid);
 			}
         }
 
@@ -583,7 +648,7 @@ static void osprd_setup(osprd_info_t *d)
     d->pid_holdingWriteLock=-1;
     //add linked list part
 	d->read_list = NULL;
-    
+    d->dead_tix = NULL;
 }
 
 
